@@ -1,0 +1,180 @@
+// ============================================
+// BE - Resultado de integridad
+// ============================================
+public class ResultadoIntegridadTabla_BE
+{
+    public string NombreTabla { get; set; }
+    public bool EsValido { get; set; }
+    public List<string> RegistrosInconsistentes { get; set; } = new();
+}
+
+public class ResultadoIntegridad_BE
+{
+    public bool EsValido { get; set; }
+    public List<ResultadoIntegridadTabla_BE> Detalles { get; set; } = new();
+}
+
+// ============================================
+// Interfaz común que cada DAL implementa
+// ============================================
+public interface IVerificableIntegridad
+{
+    ResultadoIntegridadTabla_BE VerificarIntegridad();
+}
+
+// ============================================
+// SECURITY - Calculador puro
+// ============================================
+public class DigitoVerificadorGestor_SECURITY
+{
+    public string CalcularDVH(object registro)
+    {
+        string concatenado = string.Join("", 
+            registro.GetType()
+                    .GetProperties()
+                    .Select(p => p.GetValue(registro)?.ToString() ?? ""));
+
+        using var sha256 = SHA256.Create();
+        byte[] hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(concatenado));
+        return Convert.ToHexString(hash);
+    }
+
+    public string CalcularDVV(List<string> dvhs)
+    {
+        string concatenado = string.Join("", dvhs);
+        using var sha256 = SHA256.Create();
+        byte[] hash = sha256.ComputeHash(Encoding.UTF8.GetBytes(concatenado));
+        return Convert.ToHexString(hash);
+    }
+}
+
+// ============================================
+// AnalisisDAL implementa la interfaz
+// ============================================
+public class Analisis_DAL : IVerificableIntegridad
+{
+    private readonly Analisis_ORM _orm = new();
+    private readonly DigitoVerificadorGestor_SECURITY _sec = new();
+
+    public ResultadoIntegridadTabla_BE VerificarIntegridad()
+    {
+        var resultado = new ResultadoIntegridadTabla_BE 
+        { 
+            NombreTabla = "Analisis", 
+            EsValido = true 
+        };
+
+        List<Analisis_BE> registros = _orm.ObtenerRegistros();
+        List<string> dvhsCalculados = new();
+
+        foreach (var registro in registros)
+        {
+            string dvhCalculado = _sec.CalcularDVH(registro);
+            dvhsCalculados.Add(dvhCalculado);
+
+            if (dvhCalculado != registro.DVH)
+            {
+                resultado.EsValido = false;
+                resultado.RegistrosInconsistentes.Add(
+                    $"Analisis #{registro.IdAnalisis}");
+            }
+        }
+
+        string dvvCalculado = _sec.CalcularDVV(dvhsCalculados);
+        string dvvAlmacenado = _orm.ObtenerDVVAlmacenado();
+
+        if (dvvCalculado != dvvAlmacenado)
+            resultado.EsValido = false;
+
+        return resultado;
+    }
+}
+
+// ============================================
+// EmpresaDAL implementa la misma interfaz
+// ============================================
+public class Empresa_DAL : IVerificableIntegridad
+{
+    private readonly Empresa_ORM _orm = new();
+    private readonly DigitoVerificadorGestor_SECURITY _sec = new();
+
+    public ResultadoIntegridadTabla_BE VerificarIntegridad()
+    {
+        // misma lógica, distinta entidad/tabla
+        var resultado = new ResultadoIntegridadTabla_BE 
+        { 
+            NombreTabla = "Empresa", 
+            EsValido = true 
+        };
+        // ... idéntico patrón
+        return resultado;
+    }
+}
+
+// ============================================
+// IntegridadGestor_DAL - El orquestador
+// ============================================
+public class IntegridadGestor_DAL
+{
+    // No conoce ORMs. Solo conoce la lista de DALs verificables.
+    private readonly List<IVerificableIntegridad> _dalsAVerificar;
+
+    public IntegridadGestor_DAL()
+    {
+        // Registro de todos los DALs del sistema.
+        // Agregar una tabla nueva = agregar una línea aquí
+        // y que su DAL implemente IVerificableIntegridad.
+        _dalsAVerificar = new List<IVerificableIntegridad>
+        {
+            new Analisis_DAL(),
+            new Empresa_DAL(),
+            new Usuario_DAL(),
+            new SesionAnalisis_DAL(),
+        };
+    }
+
+    public ResultadoIntegridad_BE VerificarIntegridadGeneral()
+    {
+        var resultado = new ResultadoIntegridad_BE { EsValido = true };
+
+        foreach (var dal in _dalsAVerificar)
+        {
+            var resultadoTabla = dal.VerificarIntegridad();
+            resultado.Detalles.Add(resultadoTabla);
+
+            if (!resultadoTabla.EsValido)
+                resultado.EsValido = false;
+        }
+
+        return resultado;
+    }
+}
+
+// ============================================
+// Uso desde la BLL
+// ============================================
+public class Usuario_BLL
+{
+    private readonly IntegridadGestor_DAL _integridadGestor = new();
+
+    public ResultadoOperacion_BE AutenticarUsuario(string email, string contrasena)
+    {
+        // ... validación de credenciales ...
+
+        ResultadoIntegridad_BE integridad = 
+            _integridadGestor.VerificarIntegridadGeneral();
+
+        if (!integridad.EsValido)
+        {
+            // según rol, retornar detalle técnico o mensaje simplificado
+            return new ResultadoOperacion_BE 
+            { 
+                Exito = false, 
+                Mensaje = "Error de integridad detectado" 
+            };
+        }
+
+        // ... continuar con login normal ...
+        return new ResultadoOperacion_BE { Exito = true };
+    }
+}
